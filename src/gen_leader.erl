@@ -239,7 +239,6 @@ begin_election(Server, E=#election{name=GroupName,
     {ok, ZNodePath} = erlzk:create(ZK, ElectionZNode, ephemeral_sequential),
     {ok, Stat} = erlzk:exists(ZK, ZNodePath),
     {ok, _} = erlzk:set_data(ZK, ZNodePath, term_to_binary(self()), Stat#stat.version),
-    io:format("Me ~p~n", [ZNodePath]),
     begin_election(Server, E#election{znode=ZNodePath});
 begin_election(Server=#server{mod=Mod, state=State}, E=#election{name=GroupName,
                                                                  znode=ZNodePath,
@@ -282,7 +281,6 @@ loop(Server=#server{parent = Parent, debug = Debug}, Role, E=#election{mode = Mo
           end,
     case Msg of
         {_Op, _Path, node_deleted} ->
-            io:format("Node Delete~n"),
             begin_election(Server, E);
         {system, From, Req} ->
             sys:handle_system_msg(Req, From, Parent, ?MODULE, Debug,
@@ -335,24 +333,24 @@ system_code_change([Mode, Server, Role, E], _Module, OldVsn, Extra) ->
 %% @hidden
 print_event(Dev, {in, Msg}, Name) ->
     case Msg of
-    {'$gen_call', {From, _Tag}, Call} ->
-        io:format(Dev, "*DBG* ~p got local call ~p from ~w~n",
-              [Name, Call, From]);
-    {'$leader_call', {From, _Tag}, Call} ->
-        io:format(Dev, "*DBG* ~p got global call ~p from ~w~n",
-              [Name, Call, From]);
-    {'$gen_cast', Cast} ->
-        io:format(Dev, "*DBG* ~p got local cast ~p~n",
-              [Name, Cast]);
-    {'$leader_cast', Cast} ->
-        io:format(Dev, "*DBG* ~p got global cast ~p~n",
-              [Name, Cast]);
-    _ ->
-        io:format(Dev, "*DBG* ~p got ~p~n", [Name, Msg])
+        {'$gen_call', {From, _Tag}, Call} ->
+            io:format(Dev, "*DBG* ~p got local call ~p from ~w~n",
+                      [Name, Call, From]);
+        {'$leader_call', {From, _Tag}, Call} ->
+            io:format(Dev, "*DBG* ~p got global call ~p from ~w~n",
+                      [Name, Call, From]);
+        {'$gen_cast', Cast} ->
+            io:format(Dev, "*DBG* ~p got local cast ~p~n",
+                      [Name, Cast]);
+        {'$leader_cast', Cast} ->
+            io:format(Dev, "*DBG* ~p got global cast ~p~n",
+                      [Name, Cast]);
+        _ ->
+            io:format(Dev, "*DBG* ~p got ~p~n", [Name, Msg])
     end;
 print_event(Dev, {out, Msg, To, State}, Name) ->
     io:format(Dev, "*DBG* ~p sent ~p to ~w, new state ~w~n",
-          [Name, Msg, To, State]);
+              [Name, Msg, To, State]);
 print_event(Dev, {noreply, State}, Name) ->
     io:format(Dev, "*DBG* ~p new state ~w~n", [Name, State]);
 print_event(Dev, Event, Name) ->
