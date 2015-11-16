@@ -75,18 +75,17 @@
 -callback handle_cast(msg(), mod_state(), election()) -> cb_return().
 -callback handle_info(msg(), mod_state(), election()) -> cb_return().
 
-start(Name, Mod, Arg, Options) when is_atom(Name) ->
-    gen:start(?MODULE, nolink, {local, Name}, Mod, {local_only, Arg}, Options).
+start(Name, Mod, Arg, Options) ->
+    gen:start(?MODULE, nolink, Name, Mod, {local_only, Arg}, Options).
 
-start(Name, GroupName, Mod, Arg, Options)
-  when is_atom(Name) ->
-    gen:start(?MODULE, nolink, {local, Name}, Mod, {GroupName, Arg}, Options).
+start(Name, GroupName, Mod, Arg, Options) ->
+    gen:start(?MODULE, nolink, Name, Mod, {GroupName, Arg}, Options).
 
-start_link(Name, GroupName, Mod, Arg, Options) when is_atom(Name) ->
-    gen:start(?MODULE, link, {local, Name}, Mod, {GroupName, Arg}, Options).
+start_link(Name, GroupName, Mod, Arg, Options) ->
+    gen:start(?MODULE, link, Name, Mod, {GroupName, Arg}, Options).
 
-start_link(Name, Mod, Arg, Options) when is_atom(Name) ->
-    gen:start(?MODULE, link, {local, Name}, Mod, {local_only, Arg}, Options).
+start_link(Name, Mod, Arg, Options) ->
+    gen:start(?MODULE, link, Name, Mod, {local_only, Arg}, Options).
 
 %% Query functions
 
