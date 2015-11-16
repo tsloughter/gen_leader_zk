@@ -7,7 +7,7 @@
     stdlib,
     erlzk
    ]},
-  {env,[]},
+  {env,[{zookeepers, [{"localhost", 2181}]}]},
   {modules, []},
 
   {contributors, []},

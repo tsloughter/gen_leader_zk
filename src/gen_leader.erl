@@ -198,7 +198,8 @@ init_it(Starter, Parent, Name, Mod, {local_only, _}=Arg, Options) ->
             exit(Error)
     end;
 init_it(Starter, Parent, Name, Mod, {GroupName, Arg}, Options) ->
-    {ok, Pid} = erlzk:connect([{"localhost", 2181}], 30000),
+    ZKs = application:get_env(gen_leader_zk, zookeepers, [{"localhost", 2181}]),
+    {ok, Pid} = erlzk:connect(ZKs, 30000, [{monitor, self()}]),
     Debug = debug_options(Name, Options),
     Election = #election{name = GroupName, zk=Pid},
     case catch Mod:init(Arg) of
@@ -299,8 +300,13 @@ loop(Server=#server{parent = Parent, debug = Debug}, Role, E=#election{mode=Mode
         {'DOWN', _, process, _, _} ->
             %% could get a DOWN from a former leader after electing a new one, simply ignore it.
             loop(Server, Role, E);
+        {State, _Host, _Port} when State =:= disconnected ; State =:= expired ->
+            %% Lost connection to ZK, meaning all ephemeral nodes are gone, which means we have no znode
+            begin_election(Server, E#election{znode=undefined});
+        {connected, _Host, _Port} ->
+            %% Ignore
+            loop(Server, Role, E);
         {_Op, _Path, node_deleted} ->
-            io:format("NodeDeleted ~p~n", [LeaderPid]),
             begin_election(Server, E);
         {system, From, Req} ->
             sys:handle_system_msg(Req, From, Parent, ?MODULE, Debug,
