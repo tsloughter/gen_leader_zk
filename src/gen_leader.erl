@@ -28,6 +28,7 @@
 -include_lib("erlzk/include/erlzk.hrl").
 
 -record(election,{leader = none,
+                  leader_ref,
                   zk,
                   mode = global,
                   name,
@@ -251,36 +252,55 @@ begin_election(Server=#server{mod=Mod, state=State}, E=#election{name=GroupName,
         [Leader | _] when ZNode =:= Leader ->
             %% I'm the leader
             {ok, _Synch, NewState} = Mod:elected(State, E),
-            LeaderPath = filename:join(ElectionPath, Leader),
-            %NewE = broadcast({elect, Synch}, E),
-            loop(Server#server{state = NewState}, leader, E#election{leader=LeaderPath});
-        [Leader | _]=Children1 ->
+            loop(Server#server{state = NewState}, leader, E#election{leader=self(), leader_ref=undefined});
+        [LeaderNode | _] = _Children1 ->
             %% someone else is the leader
-            Neighbor = find_neighbor(Children1, ZNode),
-            Path = filename:join(ElectionPath, Neighbor),
-            LeaderPath = filename:join(ElectionPath, Leader),
-            erlzk:exists(ZK, Path, self()),
-            loop(Server, follower, E#election{leader=LeaderPath})
+
+            %% We could/should just monitor the neighbot in ZK
+            %% then we don't have to check if we are leader unless that
+            %% node goes away. But then we'd need to message from the leader
+            %% to all other nodes that it is the new leader.
+            %% Neighbor = find_neighbor(Children1, ZNode),
+            %% Path = filename:join(ElectionPath, Neighbor),
+
+            LeaderPath = filename:join(ElectionPath, LeaderNode),
+            {ok, {PidBinary, _Stat}} = erlzk:get_data(ZK, LeaderPath),
+            Leader = binary_to_term(PidBinary),
+            LeaderRef = erlang:monitor(process, Leader),
+            erlzk:exists(ZK, LeaderPath, self()),
+            loop(Server, follower, E#election{leader=Leader, leader_ref=LeaderRef})
     end.
 
-find_neighbor([], _ZNode) ->
-    erlang:error(no_candidates);
-find_neighbor([H, H1 | _], ZNode) when H1 >= ZNode ->
-    H;
-find_neighbor([_ | T], ZNode) ->
-    find_neighbor(T, ZNode).
+%% find_neighbor([], _ZNode) ->
+%%     erlang:error(no_candidates);
+%% find_neighbor([H, H1 | _], ZNode) when H1 >= ZNode ->
+%%     H;
+%% find_neighbor([_ | T], ZNode) ->
+%%     find_neighbor(T, ZNode).
 
 %%% ---------------------------------------------------
 %%% The MAIN loop.
 %%% ---------------------------------------------------
 
-loop(Server=#server{parent = Parent, debug = Debug}, Role, E=#election{mode = Mode})->
+loop(Server=#server{parent = Parent, debug = Debug}, Role, E=#election{mode=Mode,
+                                                                       leader_ref=LeaderRef,
+                                                                       leader=LeaderPid})->
     Msg = receive
               Input ->
                   Input
           end,
     case Msg of
+        {'DOWN', LeaderRef, process, LeaderPid, _} ->
+            %% current leader is down before we've been notified by ZK
+            %% set it to undefined and wait for ZK to notice or
+            %% in the case it continues to be connected to ZK despite being
+            %% partitioned from this node, eventually crash
+            loop(Server, Role, E#election{leader_ref=undefined, leader=undefined});
+        {'DOWN', _, process, _, _} ->
+            %% could get a DOWN from a former leader after electing a new one, simply ignore it.
+            loop(Server, Role, E);
         {_Op, _Path, node_deleted} ->
+            io:format("NodeDeleted ~p~n", [LeaderPid]),
             begin_election(Server, E);
         {system, From, Req} ->
             sys:handle_system_msg(Req, From, Parent, ?MODULE, Debug,
@@ -400,11 +420,9 @@ handle_msg({from_leader, Cmd} = Msg,
            #server{mod = Mod, state = State} = Server, Role, E) ->
     handle_common_reply(catch Mod:from_leader(Cmd, State, E),
                         Msg, Server, Role, E);
-handle_msg({'$leader_call', From, Request}, Server, Role, E=#election{zk=ZK, buffered=Buffered, leader=Leader}) ->
+handle_msg({'$leader_call', From, Request}, Server, Role, E=#election{buffered=Buffered, leader=Leader}) ->
     Ref = make_ref(),
-    {ok, {Pid, _Stat}} = erlzk:get_data(ZK, Leader),
-    Pid1 = binary_to_term(Pid),
-    Pid1 ! {'$leader_call', {self(), Ref}, Request},
+    Leader ! {'$leader_call', {self(), Ref}, Request},
     NewBuffered = [{Ref,From}|Buffered],
     loop(Server, Role, E#election{buffered = NewBuffered});
 handle_msg({Ref, {leader,reply,Reply}}, Server, Role,
