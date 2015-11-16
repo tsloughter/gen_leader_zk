@@ -487,6 +487,10 @@ handle_call_reply(CB_reply, {_, From, _Request} = Msg, Server, Role, E) ->
 
 handle_common_reply(Reply, Msg, Server, Role, E) ->
     case Reply of
+        {noreply, NState} ->
+            NewServer = handle_debug(Server#server{state = NState},
+                                     Role, E, Reply),
+            loop(NewServer, infinity, Role, E);
         {ok, NState} ->
             NewServer = handle_debug(Server#server{state = NState},
                                      Role, E, Reply),
