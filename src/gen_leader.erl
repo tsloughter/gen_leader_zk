@@ -455,7 +455,7 @@ handle_msg({'$gen_cast',Msg} = Cast,
                         Cast, Server, Role, E);
 handle_msg(Msg,
            #server{mod = Mod, state = State} = Server, Role, E) ->
-    handle_common_reply(catch Mod:handle_info(Msg, State),
+    handle_common_reply(catch Mod:handle_info(Msg, State, E),
                         Msg, Server, Role, E).
 
 
