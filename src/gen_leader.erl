@@ -447,7 +447,7 @@ handle_msg({Ref, {leader,reply,Reply}}, Server, Role,
     loop(NewServer, infinity, Role, E);
 handle_msg({'$gen_call', From, Request} = Msg,
            #server{mod = Mod, state = State} = Server, Role, E) ->
-    Reply = (catch Mod:handle_call(Request, From, State)),
+    Reply = (catch Mod:handle_call(Request, From, State,E)),
     handle_call_reply(Reply, Msg, Server, Role, E);
 handle_msg({'$gen_cast',Msg} = Cast,
            #server{mod = Mod, state = State} = Server, Role, E) ->
