@@ -190,7 +190,7 @@ init_it(Starter, Parent, Name, Mod, {local_only, _}=Arg, Options) ->
                              mod = Mod,
                              state = State,
                              debug = Debug},
-            loop(Server, local_only, #election{name = Name, mode = local});
+            loop(Server, infinity, local_only, #election{name = Name, mode = local});
         Other ->
             Error = {bad_return_value, Other},
             proc_lib:init_ack(Starter, {error, Error}),
@@ -211,21 +211,27 @@ init_it(Starter, Parent, Name, Mod, {GroupName, Arg}, Options) ->
         {'EXIT', Reason} ->
             proc_lib:init_ack(Starter, {error, Reason}),
             exit(Reason);
+        {ok, State, Timeout} ->
+            proc_lib:init_ack(Starter, {ok, self()}),
+            begin_election(#server{parent = Parent,
+                                   mod = Mod,
+                                   state = State,
+                                   debug = Debug}, Timeout, Election);
         {ok, State} ->
             proc_lib:init_ack(Starter, {ok, self()}),
             begin_election(#server{parent = Parent,
                                    mod = Mod,
                                    state = State,
-                                   debug = Debug}, Election);
+                                   debug = Debug}, infinity, Election);
         Else ->
             Error = {bad_return_value, Else},
             proc_lib:init_ack(Starter, {error, Error}),
             exit(Error)
     end.
 
-begin_election(Server, E=#election{name=GroupName,
-                                   znode=undefined,
-                                   zk=ZK}) ->
+begin_election(Server, Timeout, E=#election{name=GroupName,
+                                            znode=undefined,
+                                            zk=ZK}) ->
     GroupPath = filename:join("/", GroupName),
     ElectionPath = filename:join(GroupPath, "election"),
     ElectionZNode = filename:join(ElectionPath, "n_"),
@@ -240,10 +246,10 @@ begin_election(Server, E=#election{name=GroupName,
     {ok, ZNodePath} = erlzk:create(ZK, ElectionZNode, ephemeral_sequential),
     {ok, Stat} = erlzk:exists(ZK, ZNodePath),
     {ok, _} = erlzk:set_data(ZK, ZNodePath, term_to_binary(self()), Stat#stat.version),
-    begin_election(Server, E#election{znode=ZNodePath});
-begin_election(Server=#server{mod=Mod, state=State}, E=#election{name=GroupName,
-                                                                 znode=ZNodePath,
-                                                                 zk=ZK}) ->
+    begin_election(Server, Timeout, E#election{znode=ZNodePath});
+begin_election(Server=#server{mod=Mod, state=State}, Timeout, E=#election{name=GroupName,
+                                                                          znode=ZNodePath,
+                                                                          zk=ZK}) ->
     ZNode = filename:basename(ZNodePath),
     GroupPath = filename:join("/", GroupName),
     ElectionPath = filename:join(GroupPath, "election"),
@@ -252,7 +258,7 @@ begin_election(Server=#server{mod=Mod, state=State}, E=#election{name=GroupName,
         [Leader | _] when ZNode =:= Leader ->
             %% I'm the leader
             {ok, _Synch, NewState} = Mod:elected(State, E),
-            loop(Server#server{state = NewState}, leader, E#election{leader=self(), leader_ref=undefined});
+            loop(Server#server{state = NewState}, Timeout, leader, E#election{leader=self(), leader_ref=undefined});
         [LeaderNode | _] = _Children1 ->
             %% someone else is the leader
 
@@ -268,7 +274,7 @@ begin_election(Server=#server{mod=Mod, state=State}, E=#election{name=GroupName,
             Leader = binary_to_term(PidBinary),
             LeaderRef = erlang:monitor(process, Leader),
             erlzk:exists(ZK, LeaderPath, self()),
-            loop(Server, follower, E#election{leader=Leader, leader_ref=LeaderRef})
+            loop(Server, Timeout, follower, E#election{leader=Leader, leader_ref=LeaderRef})
     end.
 
 %% find_neighbor([], _ZNode) ->
@@ -282,42 +288,45 @@ begin_election(Server=#server{mod=Mod, state=State}, E=#election{name=GroupName,
 %%% The MAIN loop.
 %%% ---------------------------------------------------
 
-loop(Server=#server{parent = Parent, debug = Debug}, Role, E=#election{mode=Mode,
-                                                                       leader_ref=LeaderRef,
-                                                                       leader=LeaderPid})->
+loop(Server=#server{parent = Parent, debug = Debug}, Time, Role, E=#election{mode=Mode,
+                                                                             leader_ref=LeaderRef,
+                                                                             leader=LeaderPid})->
     Msg = receive
               Input ->
                   Input
+          after Time ->
+                  timeout
           end,
+
     case Msg of
         {'DOWN', LeaderRef, process, LeaderPid, _} ->
             %% current leader is down before we've been notified by ZK
             %% set it to undefined and wait for ZK to notice or
             %% in the case it continues to be connected to ZK despite being
             %% partitioned from this node, eventually crash
-            loop(Server, Role, E#election{leader_ref=undefined, leader=undefined});
+            loop(Server, infinity, Role, E#election{leader_ref=undefined, leader=undefined});
         {'DOWN', _, process, _, _} ->
             %% could get a DOWN from a former leader after electing a new one, simply ignore it.
-            loop(Server, Role, E);
+            loop(Server, infinity, Role, E);
         {State, _Host, _Port} when State =:= disconnected ; State =:= expired ->
             %% Lost connection to ZK, meaning all ephemeral nodes are gone, which means we have no znode
-            begin_election(Server, E#election{znode=undefined});
+            begin_election(Server, infinity, E#election{znode=undefined});
         {connected, _Host, _Port} ->
             %% Ignore
-            loop(Server, Role, E);
+            loop(Server, infinity, Role, E);
         {_Op, _Path, node_deleted} ->
-            begin_election(Server, E);
+            begin_election(Server, infinity, E);
         {system, From, Req} ->
             sys:handle_system_msg(Req, From, Parent, ?MODULE, Debug,
                                   [normal, Server, Role, E]);
         {'EXIT', Parent, Reason} ->
             terminate(Reason, Msg, Server, Role, E);
         {leader, local_only, _, _Candidate} ->
-            loop(Server, Role, E);
+            loop(Server, infinity, Role, E);
         LeaderMsg when element(1, LeaderMsg) == leader, Mode == local ->
             Candidate = element(size(LeaderMsg), LeaderMsg),
             Candidate ! {leader, local_only, node(), self()},
-            loop(Server, Role, E);
+            loop(Server, infinity, Role, E);
         _Msg when Debug == [] ->
             handle_msg(Msg, Server, Role, E);
         _Msg ->
@@ -332,7 +341,7 @@ loop(Server=#server{parent = Parent, debug = Debug}, Role, E=#election{mode=Mode
 
 %% @hidden
 system_continue(_Parent, Debug, [normal, Server, Role, E]) ->
-    loop(Server#server{debug = Debug}, Role, E).
+    loop(Server#server{debug = Debug}, infinity, Role, E).
 
 %% @hidden
 system_terminate(Reason, _Parent, Debug, [_Mode, Server, Role, E]) ->
@@ -387,17 +396,17 @@ handle_msg(Msg={'$leader_call', From, Request}, Server=#server{mod=Mod, state=St
         {reply, Reply, NState} ->
             NewServer = reply(From, {leader,reply,Reply},
                               Server#server{state = NState}, Role, E),
-            loop(NewServer, Role, E);
+            loop(NewServer, infinity, Role, E);
         {reply, Reply, Broadcast, NState} ->
             NewE = broadcast({from_leader,Broadcast}, E),
             NewServer = reply(From, {leader,reply,Reply},
                               Server#server{state = NState}, Role,
                               NewE),
-            loop(NewServer, Role, NewE);
+            loop(NewServer, infinity, Role, NewE);
         {noreply, NState} = Reply ->
             NewServer = handle_debug(Server#server{state = NState},
                                      Role, E, Reply),
-            loop(NewServer, Role, E);
+            loop(NewServer, infinity, Role, E);
         {stop, Reason, Reply, NState} ->
             {'EXIT', R} =
                 (catch terminate(Reason, Msg,
@@ -429,13 +438,13 @@ handle_msg({'$leader_call', From, Request}, Server, Role, E=#election{buffered=B
     Ref = make_ref(),
     Leader ! {'$leader_call', {self(), Ref}, Request},
     NewBuffered = [{Ref,From}|Buffered],
-    loop(Server, Role, E#election{buffered = NewBuffered});
+    loop(Server, infinity, Role, E#election{buffered = NewBuffered});
 handle_msg({Ref, {leader,reply,Reply}}, Server, Role,
            #election{buffered = Buffered} = E) ->
     {value, {_,From}} = lists:keysearch(Ref,1,Buffered),
     NewServer = reply(From, {leader,reply,Reply}, Server, Role,
                       E#election{buffered = lists:keydelete(Ref,1,Buffered)}),
-    loop(NewServer, Role, E);
+    loop(NewServer, infinity, Role, E);
 handle_msg({'$gen_call', From, Request} = Msg,
            #server{mod = Mod, state = State} = Server, Role, E) ->
     Reply = (catch Mod:handle_call(Request, From, State)),
@@ -455,16 +464,16 @@ handle_call_reply(CB_reply, {_, From, _Request} = Msg, Server, Role, E) ->
         {reply, Reply, NState} ->
             NewServer = reply(From, Reply,
                               Server#server{state = NState}, Role, E),
-            loop(NewServer, Role, E);
+            loop(NewServer, infinity, Role, E);
         {noreply, NState} = Reply ->
             NewServer = handle_debug(Server#server{state = NState},
                                      Role, E, Reply),
-            loop(NewServer, Role, E);
+            loop(NewServer, infinity, Role, E);
         {activate, _, Reply, NState}
           when E#election.mode == local ->
             reply(From, Reply),
             NServer = Server#server{state = NState},
-            begin_election(NServer, E);
+            begin_election(NServer, infinity, E);
         {stop, Reason, Reply, NState} ->
             {'EXIT', R} =
                 (catch terminate(Reason, Msg, Server#server{state = NState},
@@ -481,12 +490,12 @@ handle_common_reply(Reply, Msg, Server, Role, E) ->
         {ok, NState} ->
             NewServer = handle_debug(Server#server{state = NState},
                                      Role, E, Reply),
-            loop(NewServer, Role, E);
+            loop(NewServer, infinity, Role, E);
         {ok, Broadcast, NState} ->
             NewE = broadcast({from_leader,Broadcast}, E),
             NewServer = handle_debug(Server#server{state = NState},
                                      Role, E, Reply),
-            loop(NewServer, Role, NewE);
+            loop(NewServer, infinity, Role, NewE);
         {stop, Reason, NState} ->
             terminate(Reason, Msg, Server#server{state = NState}, Role, E);
         {'EXIT', Reason} ->
